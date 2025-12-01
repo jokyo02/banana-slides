@@ -41,13 +41,13 @@ export const Home: React.FC = () => {
     },
     outline: {
       icon: <FileText size={20} />,
-      label: '从大纲生成',
+      label: '从大纲生成（未完善，但可手动编辑大纲卡片）',
       placeholder: '粘贴你的 PPT 大纲...\n\n例如：\n第一部分：AI 的起源\n- 1950 年代的开端\n- 达特茅斯会议\n\n第二部分：发展历程\n...',
       description: '已有大纲？直接粘贴即可快速生成',
     },
     description: {
       icon: <FileEdit size={20} />,
-      label: '从描述生成',
+      label: '从描述生成（未完善，但可手动编辑描述卡片）',
       placeholder: '粘贴你的详细页面描述...\n\n例如：\n第 1 页\n标题：人工智能的诞生\n内容：1950 年，图灵提出"图灵测试"...\n...',
       description: '已有完整描述？直接生成图片',
     },
