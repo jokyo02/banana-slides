@@ -28,7 +28,6 @@ class AIService:
     
     def __init__(self, api_key: str, api_base: str = None):
         """Initialize AI service with API credentials"""
-        # Always create HttpOptions, matching gemini_genai.py behavior
         self.client = genai.Client(
             http_options=types.HttpOptions(
                 base_url=api_base

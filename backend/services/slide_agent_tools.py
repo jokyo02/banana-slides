@@ -20,7 +20,24 @@ class SlideAgentTools(Toolkit):
     """Tools for slide editing agent"""
     
     def __init__(self, project_id: str, app=None):
-        super().__init__(name="slide_agent_tools")
+        # 显式向 Agno 注册要暴露给大模型的工具方法
+        # 注意：tools 参数里的可调用对象名（. __name__）会作为工具名称，
+        # 需要与我们在 instructions 中提到的名字一致：
+        # - edit_page_image
+        # - update_page_description
+        # - update_page_outline
+        # - regenerate_page_image
+        # - get_project_pages
+        super().__init__(
+            name="slide_agent_tools",
+            tools=[
+                self.edit_page_image,
+                self.update_page_description,
+                self.update_page_outline,
+                self.regenerate_page_image,
+                self.get_project_pages,
+            ],
+        )
         self.project_id = project_id
         self.app = app
         self.active_tasks = []  # Track active async tasks (max 4)

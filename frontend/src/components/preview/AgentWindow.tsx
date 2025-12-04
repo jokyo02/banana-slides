@@ -119,7 +119,7 @@ export const AgentWindow: React.FC<AgentWindowProps> = ({ isOpen, onClose }) => 
             <h3 className="text-sm font-semibold text-gray-900">Agent</h3>
           </div>
           <p className="text-[11px] text-gray-500 pl-9">
-            用自然语言描述你想对当前页面做的调整
+            用自然语言描述你想对当前PPT做的调整
           </p>
         </div>
         <button

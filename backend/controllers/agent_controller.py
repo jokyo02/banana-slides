@@ -3,6 +3,7 @@ Agent Controller - handles agent-related endpoints for slide editing
 """
 import os
 import logging
+from google.genai import types
 from flask import Blueprint, request, current_app
 from models import db, Project, Page
 from utils import success_response, error_response, not_found, bad_request
@@ -16,24 +17,24 @@ logger = logging.getLogger(__name__)
 agent_bp = Blueprint('agent', __name__, url_prefix='/api/projects')
 
 
+gemini_model = Gemini(
+    id=os.getenv("AGENT_MODEL", "gemini-2.5-flash"),
+    client_params={
+        "http_options": types.HttpOptions(
+            base_url=os.getenv("GOOGLE_API_BASE")
+        ),
+        "api_key": os.getenv("GOOGLE_API_KEY", "")
+    }
+)
+
 def create_slide_agent(project_id: str, app=None) -> Agent:
     """Create an Agno agent for slide editing"""
-    # Get API key - agno expects GEMINI_API_KEY, but we use GOOGLE_API_KEY in this project
-    # So we check both and use whichever is available
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        # Try GOOGLE_API_KEY from environment
-        api_key = os.getenv("GOOGLE_API_KEY")
     
-    # If still no key and we have app, try app config
-    if not api_key and app:
-        with app.app_context():
-            api_key = current_app.config.get('GOOGLE_API_KEY', '')
+    with app.app_context():
+        api_key = current_app.config.get('GOOGLE_API_KEY', '')
     
     if not api_key:
-        raise ValueError("API key not configured. Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
-    
-    model_id = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        raise ValueError("API key not configured. Please set GOOGLE_API_KEY environment variable")
     
     # Create tools
     slide_tools = SlideAgentTools(project_id=project_id, app=app)
@@ -98,7 +99,7 @@ def create_slide_agent(project_id: str, app=None) -> Agent:
     
     agent = Agent(
         name="SlideEditor",
-        model=Gemini(id=model_id, api_key=api_key),
+        model=gemini_model,
         tools=[slide_tools, sleep_tools],
         instructions=instructions,
         markdown=True,
@@ -146,18 +147,20 @@ def agent_chat(project_id):
         response_text = ""
         if hasattr(run_response, 'content'):
             response_text = run_response.content
-        elif hasattr(run_response, 'messages') and run_response.messages:
-            # Get last assistant message
+        elif hasattr(run_response, 'messages') and getattr(run_response, "messages", None):
+            # Get last assistant message with string content
             for msg in reversed(run_response.messages):
-                if hasattr(msg, 'content'):
-                    response_text = msg.content
+                content = getattr(msg, "content", None)
+                if isinstance(content, str) and content.strip():
+                    response_text = content
                     break
         else:
             response_text = str(run_response)
         
+        # 注意：run_response.messages 里是复杂的 Message 对象，不能直接 JSON 序列化
+        # 前端目前只用到 response 文本，这里先只返回字符串，避免报错
         return success_response({
-            "response": response_text,
-            "messages": run_response.messages if hasattr(run_response, 'messages') else []
+            "response": response_text
         })
     
     except Exception as e:
