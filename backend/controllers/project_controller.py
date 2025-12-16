@@ -2,7 +2,8 @@
 Project Controller - handles project-related endpoints
 """
 import logging
-from flask import Blueprint, request, jsonify
+import os
+from flask import Blueprint, request, jsonify, current_app
 from models import db, Project, Page, Task, ReferenceFile
 from utils import success_response, error_response, not_found, bad_request
 from services import AIService, ProjectContext
@@ -40,6 +41,45 @@ def _get_project_reference_files_content(project_id: str) -> list:
             })
     
     return files_content
+
+
+def _build_page_highlights(pages: list, limit: int = 8) -> list:
+    """
+    Build concise summaries of pages for intent extraction prompts.
+    """
+    highlights = []
+    for page in pages[:limit]:
+        outline = page.get_outline_content() or {}
+        description = page.get_description_content() or {}
+        title = outline.get('title') or page.part or f'第{page.order_index + 1}页'
+        points = outline.get('points') or []
+        summary = '；'.join([str(p).strip() for p in points if p][:3])
+        if not summary:
+            if isinstance(description, dict):
+                if description.get('text'):
+                    summary = description['text']
+                elif description.get('text_content'):
+                    summary = '\n'.join(description['text_content'])
+        summary = (summary or '').strip().replace('\n', ' ')
+        highlights.append({
+            'title': title,
+            'summary': summary[:200] if summary else ''
+        })
+    return highlights
+
+
+def _build_reference_summaries(reference_files: list, max_files: int = 2, max_chars: int = 400) -> list:
+    """
+    Build concise snippets from reference files for intent extraction.
+    """
+    summaries = []
+    for item in reference_files[:max_files]:
+        content = (item.get('content') or '').strip()
+        if not content:
+            continue
+        snippet = content.replace('\n', ' ')
+        summaries.append(f"{item.get('filename')}: {snippet[:max_chars]}")
+    return summaries
 
 
 def _reconstruct_outline_from_pages(pages: list) -> list:
@@ -218,9 +258,13 @@ def update_project(project_id):
         if 'idea_prompt' in data:
             project.idea_prompt = data['idea_prompt']
         
-        # Update extra_requirements if provided
+        # Update text fields if provided
         if 'extra_requirements' in data:
             project.extra_requirements = data['extra_requirements']
+        if 'intent_summary' in data:
+            project.intent_summary = data['intent_summary']
+        if 'template_style_description' in data:
+            project.template_style_description = data['template_style_description']
         
         # Update page order if provided
         if 'pages_order' in data:
@@ -237,6 +281,85 @@ def update_project(project_id):
     
     except Exception as e:
         db.session.rollback()
+        return error_response('SERVER_ERROR', str(e), 500)
+
+
+@project_bp.route('/<project_id>/intent/regenerate', methods=['POST'])
+def regenerate_project_intent(project_id):
+    """
+    POST /api/projects/{project_id}/intent/regenerate
+    Regenerate intent summary and/or template style description using AI.
+    
+    Request body (optional):
+    {
+        "regenerate_intent": true,
+        "regenerate_template_style": true
+    }
+    """
+    try:
+        project = Project.query.get(project_id)
+        if not project:
+            return not_found('Project')
+        
+        data = request.get_json() or {}
+        regenerate_intent = data.get('regenerate_intent', True)
+        regenerate_template_style = data.get('regenerate_template_style', True)
+        
+        if not regenerate_intent and not regenerate_template_style:
+            return bad_request("至少需要指定一个需要重新生成的字段。")
+        
+        reference_files_content = _get_project_reference_files_content(project_id)
+        project_context = ProjectContext(project, reference_files_content)
+        ai_service = AIService()
+        
+        intent_summary_value = project.intent_summary
+        template_style_value = project.template_style_description
+        
+        if regenerate_intent:
+            ordered_pages = project.pages.order_by(Page.order_index).all()
+            page_highlights = _build_page_highlights(ordered_pages)
+            reference_summaries = _build_reference_summaries(reference_files_content)
+            intent_summary_value = ai_service.extract_intent_summary(
+                project_context=project_context,
+                page_highlights=page_highlights,
+                extra_requirements=project.extra_requirements,
+                reference_summaries=reference_summaries
+            )
+            project.intent_summary = intent_summary_value.strip()
+        
+        if regenerate_template_style:
+            if not project.template_image_path:
+                return bad_request("当前项目没有模板图片，无法生成模板风格描述。")
+            
+            upload_folder = current_app.config['UPLOAD_FOLDER']
+            template_abs_path = os.path.join(upload_folder, project.template_image_path)
+            if not os.path.exists(template_abs_path):
+                return error_response('FILE_NOT_FOUND', "模板图片文件不存在，请重新上传。", 404)
+            
+            intent_for_template = project.intent_summary or intent_summary_value
+            template_style_value = ai_service.generate_template_style_description(
+                template_abs_path,
+                intent_summary=intent_for_template
+            )
+            project.template_style_description = template_style_value.strip()
+        
+        project.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return success_response({
+            'intent_summary': project.intent_summary,
+            'template_style_description': project.template_style_description
+        })
+    
+    except ValueError as ve:
+        db.session.rollback()
+        return bad_request(str(ve))
+    except FileNotFoundError as fe:
+        db.session.rollback()
+        return error_response('FILE_NOT_FOUND', str(fe), 404)
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"regenerate_project_intent failed: {str(e)}", exc_info=True)
         return error_response('SERVER_ERROR', str(e), 500)
 
 

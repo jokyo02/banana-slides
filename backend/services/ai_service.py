@@ -4,6 +4,8 @@ Based on demo.py and gemini_genai.py
 TODO: use structured output API
 """
 import os
+import io
+import base64
 import json
 import re
 import logging
@@ -21,9 +23,17 @@ from .prompts import (
     get_description_to_outline_prompt,
     get_description_split_prompt,
     get_outline_refinement_prompt,
-    get_descriptions_refinement_prompt
+    get_descriptions_refinement_prompt,
+    get_intent_summary_prompt,
+    get_template_style_description_prompt,
 )
-from .ai_providers import get_text_provider, get_image_provider, TextProvider, ImageProvider
+from .ai_providers import (
+    get_text_provider,
+    get_image_provider,
+    TextProvider,
+    ImageProvider,
+    get_provider_format,
+)
 from config import get_config
 
 logger = logging.getLogger(__name__)
@@ -95,6 +105,13 @@ class AIService:
         # Use provided providers or create from factory based on AI_PROVIDER_FORMAT env var
         self.text_provider = text_provider or get_text_provider(model=self.text_model)
         self.image_provider = image_provider or get_image_provider(model=self.image_model)
+        self.provider_format = get_provider_format()
+        self._gemini_client = None
+        self._openai_client = None
+        self._google_api_key = os.getenv('GOOGLE_API_KEY')
+        self._google_api_base = os.getenv('GOOGLE_API_BASE')
+        self._openai_api_key = os.getenv('OPENAI_API_KEY')
+        self._openai_api_base = os.getenv('OPENAI_API_BASE')
     
     @staticmethod
     def extract_image_urls_from_markdown(text: str) -> List[str]:
@@ -317,11 +334,18 @@ class AIService:
         result = "\n".join(text_parts)
         return dedent(result)
     
-    def generate_image_prompt(self, outline: List[Dict], page: Dict, 
-                            page_desc: str, page_index: int, 
-                            has_material_images: bool = False,
-                            extra_requirements: Optional[str] = None,
-                            language='zh') -> str:
+    def generate_image_prompt(
+        self,
+        outline: List[Dict],
+        page: Dict,
+        page_desc: str,
+        page_index: int,
+        has_material_images: bool = False,
+        extra_requirements: Optional[str] = None,
+        language: str = 'zh',
+        intent_summary: Optional[str] = None,
+        template_style_description: Optional[str] = None,
+    ) -> str:
         """
         Generate image generation prompt for a page
         Based on demo.py gen_prompts()
@@ -355,7 +379,9 @@ class AIService:
             current_section=current_section,
             has_material_images=has_material_images,
             extra_requirements=extra_requirements,
-            language=language
+            language=language,
+            intent_summary=intent_summary,
+            template_style_description=template_style_description,
         )
         
         return prompt
@@ -562,3 +588,109 @@ class AIService:
         else:
             raise ValueError("Expected a list of page descriptions, but got: " + str(type(descriptions)))
 
+    def extract_intent_summary(
+        self,
+        project_context: ProjectContext,
+        page_highlights: List[Dict[str, str]],
+        extra_requirements: Optional[str] = None,
+        reference_summaries: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Generate overall intent summary for a project.
+        """
+        prompt = get_intent_summary_prompt(
+            project_context=project_context,
+            page_highlights=page_highlights,
+            extra_requirements=extra_requirements,
+            reference_summaries=reference_summaries,
+        )
+        response = self.text_provider.generate_text(prompt, thinking_budget=600)
+        return response.strip()
+
+    def generate_template_style_description(
+        self,
+        template_image_path: str,
+        intent_summary: Optional[str] = None,
+    ) -> str:
+        """
+        Describe the visual style of the uploaded template image.
+        """
+        if not template_image_path:
+            raise ValueError("Template image path is required.")
+        if not os.path.exists(template_image_path):
+            raise FileNotFoundError(f"Template image not found: {template_image_path}")
+        
+        prompt = get_template_style_description_prompt(intent_summary=intent_summary)
+        description = self._describe_image_with_prompt(template_image_path, prompt)
+        if not description:
+            raise ValueError("模板风格描述生成失败，请稍后重试。")
+        return description.strip()
+
+    def _get_openai_vision_client(self):
+        if self._openai_client is None:
+            from openai import OpenAI
+            if not self._openai_api_key:
+                raise ValueError("OPENAI_API_KEY 未配置，无法调用 OpenAI 视觉能力。")
+            self._openai_client = OpenAI(
+                api_key=self._openai_api_key,
+                base_url=self._openai_api_base
+            )
+        return self._openai_client
+
+    def _get_gemini_vision_client(self):
+        if self._gemini_client is None:
+            from google import genai
+            from google.genai import types
+            if not self._google_api_key:
+                raise ValueError("GOOGLE_API_KEY 未配置，无法调用 Gemini 视觉能力。")
+            self._gemini_client = genai.Client(
+                http_options=types.HttpOptions(base_url=self._google_api_base) if self._google_api_base else None,
+                api_key=self._google_api_key
+            )
+        return self._gemini_client
+
+    def _describe_image_with_prompt(self, image_path: str, prompt: str) -> str:
+        """
+        Use a multimodal provider to describe an image with the given prompt.
+        """
+        with Image.open(image_path) as image:
+            if self.provider_format == 'openai':
+                client = self._get_openai_vision_client()
+                buffered = io.BytesIO()
+                image_to_encode = image.convert('RGB') if image.mode in ('RGBA', 'LA', 'P') else image
+                image_to_encode.save(buffered, format="JPEG", quality=95)
+                base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                response = client.chat.completions.create(
+                    model=self.vision_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}" }},
+                                {"type": "text", "text": prompt}
+                            ]
+                        }
+                    ],
+                    temperature=0.4,
+                )
+                content = response.choices[0].message.content
+                if isinstance(content, list):
+                    parts = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            parts.append(item.get('text', ''))
+                        else:
+                            parts.append(getattr(item, 'text', ''))
+                    return ''.join(parts).strip()
+                return content.strip()
+            else:
+                from google.genai import types
+                client = self._get_gemini_vision_client()
+                result = client.models.generate_content(
+                    model=self.vision_model,
+                    contents=[image, prompt],
+                    config=types.GenerateContentConfig(
+                        temperature=0.4,
+                    )
+                )
+                return result.text.strip()

@@ -284,11 +284,16 @@ def get_page_description_prompt(project_context: 'ProjectContext', outline: list
     return final_prompt
 
 
-def get_image_generation_prompt(page_desc: str, outline_text: str, 
-                                current_section: str,
-                                has_material_images: bool = False,
-                                extra_requirements: str = None,
-                                language: str = None) -> str:
+def get_image_generation_prompt(
+    page_desc: str,
+    outline_text: str,
+    current_section: str,
+    has_material_images: bool = False,
+    extra_requirements: str = None,
+    language: str = None,
+    intent_summary: str = None,
+    template_style_description: str = None,
+) -> str:
     """
     生成图片生成 prompt
     
@@ -315,10 +320,35 @@ def get_image_generation_prompt(page_desc: str, outline_text: str,
     extra_req_text = ""
     if extra_requirements and extra_requirements.strip():
         extra_req_text = f"\n\n额外要求（请务必遵循）：\n{extra_requirements}\n"
+    
+    # 模板风格描述：作为参考视觉风格的独立段落
+    template_style_section = ""
+    if template_style_description and template_style_description.strip():
+        template_style_section = f"""
+<template_style_reference>
+参考模板的视觉风格特点：
+{template_style_description}
+
+请在整体画面风格、配色和构图语言上保持与上述模板高度一致，但不要复制模板中的文字内容。
+</template_style_reference>
+"""
+    
+    # 用户整体意图：作为全局设计要求的独立段落
+    user_intent_section = ""
+    if intent_summary and intent_summary.strip():
+        user_intent_section = f"""
+<user_requirements>
+用户对整个 PPT 的整体要求（必须严格遵守，并体现在本页设计中）：
+{intent_summary}
+</user_requirements>
+"""
+
+    ppt_language_instruction = get_ppt_language_instruction(language)
 
 # 该处参考了@歸藏的A工具箱
-    prompt = (f"""\
-你是一位专家级UI UX演示设计师，专注于生成设计良好的PPT页面。
+    prompt = (
+        f"""你是一位专家级UI UX演示设计师，专注于生成设计良好的PPT页面。
+
 当前PPT页面的页面描述如下:
 <page_description>
 {page_desc}
@@ -330,19 +360,21 @@ def get_image_generation_prompt(page_desc: str, outline_text: str,
 
 当前位于章节：{current_section}
 </reference_information>
-
-
+{template_style_section}
+{user_intent_section}
 <design_guidelines>
 - 要求文字清晰锐利, 画面为4K分辨率，16:9比例。
-- 配色和设计语言和模板图片严格相似。
-- 根据内容自动设计最完美的构图，不重不漏地渲染"页面描述"中的文本。
+- 配色和设计语言要与参考模板严格保持一致（如果提供了模板风格参考）。
+- 根据内容自动设计最合理的构图，不重不漏地可视化“页面描述”中的关键信息。
 - 如非必要，禁止出现 markdown 格式符号（如 # 和 * 等）。
-- 只参考风格设计，禁止出现模板中的文字。
-- 使用大小恰当的装饰性图形或插画对空缺位置进行填补。
+- 只参考模板的视觉风格，禁止出现模板中的文字内容。
+- 使用大小恰当的装饰性图形或插画对空缺位置进行填补，增强信息表达。
+- 必须优先满足上述“用户整体要求”中提到的视觉/结构诉求。
 </design_guidelines>
-{get_ppt_language_instruction(language)}
+{ppt_language_instruction}
 {material_images_note}{extra_req_text}
-""")
+"""
+    )
     
     logger.debug(f"[get_image_generation_prompt] Final prompt:\n{prompt}")
     return prompt
@@ -376,6 +408,87 @@ def get_image_edit_prompt(edit_instruction: str, original_description: str = Non
         prompt = f"根据以下指令修改这张PPT页面：{edit_instruction}\n保持原有的内容结构和设计风格，只按照指令进行修改。提供的参考图中既有新素材，也有用户手动框选出的区域，请你根据原图和参考图的关系智能判断用户意图。"
     
     logger.debug(f"[get_image_edit_prompt] Final prompt:\n{prompt}")
+    return prompt
+
+
+def get_intent_summary_prompt(
+    project_context: 'ProjectContext',
+    page_highlights: List[Dict[str, str]],
+    extra_requirements: Optional[str] = None,
+    reference_summaries: Optional[List[str]] = None,
+) -> str:
+    """
+    Prompt for extracting overall intent summary.
+    """
+    idea_prompt = (project_context.idea_prompt or '').strip()
+    outline_text = (project_context.outline_text or '').strip()
+    description_text = (project_context.description_text or '').strip()
+    creation_type = project_context.creation_type or 'idea'
+    extra_section = (extra_requirements or '').strip()
+    
+    page_lines = []
+    for idx, page in enumerate(page_highlights, 1):
+        title = page.get('title') or f'第{idx}页'
+        summary = page.get('summary') or ''
+        page_lines.append(f"{idx}. {title}: {summary}")
+    page_section = "\n".join(page_lines) if page_lines else "暂无页面内容"
+    
+    reference_section = ""
+    if reference_summaries:
+        reference_section = "\n".join(reference_summaries)
+    
+    prompt = dedent(f"""
+你是一名 PPT 创意总监，擅长从用户提供的素材中总结整体诉求。
+
+请根据以下信息，总结本次 PPT 需要达成的总体目标和视觉方向：
+
+<project_basics>
+- 创建方式：{creation_type}
+- 用户一句话想法：{idea_prompt or '（未提供）'}
+- 用户提供的大纲/文本：{outline_text or '（未提供）'}
+- 用户描述文本：{description_text or '（未提供）'}
+- 额外要求：{extra_section or '（未提供）'}
+</project_basics>
+
+<page_highlights>
+{page_section}
+</page_highlights>
+
+<reference_materials>
+{reference_section or '（无参考文件）'}
+</reference_materials>
+
+输出要求：
+1. 只用中文回答。
+2. 分两段输出：
+   - “整体意图：” 开头，概括用户想要呈现的核心内容/受众/场景（1-2句）。
+   - “视觉方向：” 开头，归纳用户在颜色、风格、氛围等方面的需求（1句）。
+3. 不要输出任何额外说明、列表或 Markdown 标记。
+""")
+    logger.debug(f"[get_intent_summary_prompt] Final prompt:\n{prompt}")
+    return prompt
+
+
+def get_template_style_description_prompt(intent_summary: Optional[str] = None) -> str:
+    """
+    Prompt for describing template visual style from an image.
+    """
+    intent_text = intent_summary.strip() if intent_summary else ''
+    intent_section = (
+        f"\n用户整体意图（供参考）：{intent_text}\n"
+        if intent_text else ""
+    )
+    
+    prompt = dedent(f"""
+你是一名视觉设计分析师。请观察提供的模板图片，从配色、排版结构、装饰元素和整体氛围等角度，
+用2-3句话总结该模板的视觉风格特点。描述要具体，可引用颜色、构图方式、字体感觉等。
+{intent_section}
+输出要求：
+1. 只输出中文。
+2. 每句话不超过40个汉字。
+3. 不要提到“图片中”“模板图”等描述，看起来像直接的风格说明。
+""")
+    logger.debug(f"[get_template_style_description_prompt] Final prompt:\n{prompt}")
     return prompt
 
 

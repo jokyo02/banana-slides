@@ -297,11 +297,25 @@ def generate_images_task(task_id: str, project_id: str, ai_service, file_service
                                 has_material_images = True
                         
                         # Generate image prompt
+                        # 获取项目的意图总结和模板风格描述（在任务开始前已写入数据库）
+                        from models import Project as ProjectModel
+                        project_obj = ProjectModel.query.get(project_id)
+                        # 使用 getattr 做兼容：老数据库没有新字段时不会抛 AttributeError
+                        intent_summary = getattr(project_obj, "intent_summary", None) if project_obj else None
+                        template_style_description = getattr(
+                            project_obj, "template_style_description", None
+                        ) if project_obj else None
+
                         prompt = ai_service.generate_image_prompt(
-                            outline, page_data, desc_text, page_index,
+                            outline,
+                            page_data,
+                            desc_text,
+                            page_index,
                             has_material_images=has_material_images,
                             extra_requirements=extra_requirements,
-                            language=language
+                            language=language,
+                            intent_summary=intent_summary,
+                            template_style_description=template_style_description,
                         )
                         logger.debug(f"Generated image prompt for page {page_id}")
                         
@@ -461,11 +475,24 @@ def generate_single_page_image_task(task_id: str, project_id: str, page_id: str,
             if page.part:
                 page_data['part'] = page.part
             
+            # 获取项目的意图总结和模板风格描述（向后兼容：老库没有字段时不抛错）
+            from models import Project as ProjectModel
+            project_obj = ProjectModel.query.get(project_id)
+            intent_summary = getattr(project_obj, "intent_summary", None) if project_obj else None
+            template_style_description = getattr(
+                project_obj, "template_style_description", None
+            ) if project_obj else None
+
             prompt = ai_service.generate_image_prompt(
-                outline, page_data, desc_text, page.order_index + 1,
+                outline,
+                page_data,
+                desc_text,
+                page.order_index + 1,
                 has_material_images=has_material_images,
                 extra_requirements=extra_requirements,
-                language=language
+                language=language,
+                intent_summary=intent_summary,
+                template_style_description=template_style_description,
             )
             
             # Generate image

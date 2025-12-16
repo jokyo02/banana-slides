@@ -25,7 +25,7 @@ import type { Material } from '@/api/endpoints';
 import { SlideCard } from '@/components/preview/SlideCard';
 import { useProjectStore } from '@/store/useProjectStore';
 import { getImageUrl } from '@/api/client';
-import { getPageImageVersions, setCurrentImageVersion, updateProject, uploadTemplate } from '@/api/endpoints';
+import { getPageImageVersions, setCurrentImageVersion, updateProject, uploadTemplate, regenerateProjectIntent } from '@/api/endpoints';
 import type { ImageVersion, DescriptionContent } from '@/types';
 import { normalizeErrorMessage } from '@/utils';
 
@@ -71,9 +71,19 @@ export const SlidePreview: React.FC = () => {
     uploadedFiles: [],
   });
   const [extraRequirements, setExtraRequirements] = useState<string>('');
+  const [intentSummary, setIntentSummary] = useState<string>('');
+  const [templateStyleDescription, setTemplateStyleDescription] = useState<string>('');
+  const [isSavingIntentSummary, setIsSavingIntentSummary] = useState(false);
+  const [isSavingTemplateStyle, setIsSavingTemplateStyle] = useState(false);
+  const [isRegeneratingIntent, setIsRegeneratingIntent] = useState(false);
+  const [isRegeneratingTemplateStyle, setIsRegeneratingTemplateStyle] = useState(false);
+  const [isIntentExpanded, setIsIntentExpanded] = useState(false);
+  const [isTemplateStyleExpanded, setIsTemplateStyleExpanded] = useState(false);
   const [isSavingRequirements, setIsSavingRequirements] = useState(false);
   const [isExtraRequirementsExpanded, setIsExtraRequirementsExpanded] = useState(false);
   const isEditingRequirements = useRef(false); // 跟踪用户是否正在编辑额外要求
+  const isEditingIntentSummary = useRef(false);
+  const isEditingTemplateStyle = useRef(false);
   const lastProjectId = useRef<string | null>(null); // 跟踪上一次的项目ID
   // 素材生成模态开关（模块本身可复用，这里只是示例入口）
   const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
@@ -123,22 +133,41 @@ export const SlidePreview: React.FC = () => {
   // 当项目加载后，初始化额外要求
   // 只在项目首次加载或项目ID变化时初始化，避免覆盖用户正在输入的内容
   useEffect(() => {
-    if (currentProject) {
-      // 检查是否是新项目
-      const isNewProject = lastProjectId.current !== currentProject.id;
-      
-      if (isNewProject) {
-        // 新项目，初始化额外要求
-        setExtraRequirements(currentProject.extra_requirements || '');
-        lastProjectId.current = currentProject.id || null;
-        isEditingRequirements.current = false;
-      } else if (!isEditingRequirements.current) {
-        // 同一项目且用户未在编辑，可以更新（比如从服务器保存后同步回来）
-        setExtraRequirements(currentProject.extra_requirements || '');
-      }
-      // 如果用户正在编辑（isEditingRequirements.current === true），则不更新本地状态
+    if (!currentProject) return;
+    
+    const isNewProject = lastProjectId.current !== currentProject.id;
+    const nextExtra = currentProject.extra_requirements || '';
+    const nextIntent = currentProject.intent_summary || '';
+    const nextTemplateStyle = currentProject.template_style_description || '';
+
+    if (isNewProject) {
+      lastProjectId.current = currentProject.id || null;
+      setExtraRequirements(nextExtra);
+      setIntentSummary(nextIntent);
+      setTemplateStyleDescription(nextTemplateStyle);
+      isEditingRequirements.current = false;
+      isEditingIntentSummary.current = false;
+      isEditingTemplateStyle.current = false;
+      setIsIntentExpanded(Boolean(nextIntent));
+      setIsTemplateStyleExpanded(Boolean(nextTemplateStyle));
+      return;
     }
-  }, [currentProject?.id, currentProject?.extra_requirements]);
+
+    if (!isEditingRequirements.current) {
+      setExtraRequirements(nextExtra);
+    }
+    if (!isEditingIntentSummary.current) {
+      setIntentSummary(nextIntent);
+    }
+    if (!isEditingTemplateStyle.current) {
+      setTemplateStyleDescription(nextTemplateStyle);
+    }
+  }, [
+    currentProject?.id,
+    currentProject?.extra_requirements,
+    currentProject?.intent_summary,
+    currentProject?.template_style_description,
+  ]);
 
   // 加载当前页面的历史版本
   useEffect(() => {
@@ -569,6 +598,94 @@ export const SlidePreview: React.FC = () => {
     }
   }, [currentProject, projectId, extraRequirements, syncProject, show]);
 
+  const handleSaveIntentSummary = useCallback(async () => {
+    if (!currentProject || !projectId) return;
+    
+    setIsSavingIntentSummary(true);
+    try {
+      await updateProject(projectId, { intent_summary: intentSummary || '' });
+      isEditingIntentSummary.current = false;
+      await syncProject(projectId);
+      show({ message: '意图总结已保存', type: 'success' });
+    } catch (error: any) {
+      show({
+        message: `保存失败: ${error.message || '未知错误'}`,
+        type: 'error',
+      });
+    } finally {
+      setIsSavingIntentSummary(false);
+    }
+  }, [currentProject, projectId, intentSummary, syncProject, show]);
+
+  const handleSaveTemplateStyle = useCallback(async () => {
+    if (!currentProject || !projectId) return;
+    
+    setIsSavingTemplateStyle(true);
+    try {
+      await updateProject(projectId, { template_style_description: templateStyleDescription || '' });
+      isEditingTemplateStyle.current = false;
+      await syncProject(projectId);
+      show({ message: '模板风格描述已保存', type: 'success' });
+    } catch (error: any) {
+      show({
+        message: `保存失败: ${error.message || '未知错误'}`,
+        type: 'error',
+      });
+    } finally {
+      setIsSavingTemplateStyle(false);
+    }
+  }, [currentProject, projectId, templateStyleDescription, syncProject, show]);
+
+  const handleRegenerateIntentSummary = useCallback(async () => {
+    if (!projectId) return;
+    setIsRegeneratingIntent(true);
+    try {
+      const response = await regenerateProjectIntent(projectId, {
+        regenerate_intent: true,
+        regenerate_template_style: false,
+      });
+      const newIntent = response.data?.intent_summary || '';
+      setIntentSummary(newIntent);
+      isEditingIntentSummary.current = false;
+      await syncProject(projectId);
+      show({ message: '意图总结已自动生成', type: 'success' });
+    } catch (error: any) {
+      show({
+        message: error.message || '自动生成失败，请稍后重试',
+        type: 'error',
+      });
+    } finally {
+      setIsRegeneratingIntent(false);
+    }
+  }, [projectId, syncProject, show]);
+
+  const handleRegenerateTemplateStyle = useCallback(async () => {
+    if (!projectId) return;
+    if (!currentProject?.template_image_path) {
+      show({ message: '请先上传模板图片，再尝试生成风格描述', type: 'info' });
+      return;
+    }
+    setIsRegeneratingTemplateStyle(true);
+    try {
+      const response = await regenerateProjectIntent(projectId, {
+        regenerate_intent: false,
+        regenerate_template_style: true,
+      });
+      const newDescription = response.data?.template_style_description || '';
+      setTemplateStyleDescription(newDescription);
+      isEditingTemplateStyle.current = false;
+      await syncProject(projectId);
+      show({ message: '模板风格描述已自动生成', type: 'success' });
+    } catch (error: any) {
+      show({
+        message: error.message || '自动生成失败，请稍后重试',
+        type: 'error',
+      });
+    } finally {
+      setIsRegeneratingTemplateStyle(false);
+    }
+  }, [projectId, currentProject?.template_image_path, syncProject, show]);
+
   const handleTemplateSelect = async (templateFile: File | null, templateId?: string) => {
     if (!projectId) return;
     
@@ -794,6 +911,113 @@ export const SlidePreview: React.FC = () => {
                   >
                     {isSavingRequirements ? '保存中...' : '保存'}
                   </Button>
+                </div>
+              )}
+            </div>
+
+            {/* 意图总结 */}
+            <div className="border-t border-gray-200 pt-2 md:pt-3">
+              <button
+                onClick={() => setIsIntentExpanded(!isIntentExpanded)}
+                className="w-full flex items-center justify-between text-xs md:text-sm font-medium text-gray-700 hover:text-gray-900 transition-colors"
+              >
+                <span>意图总结</span>
+                {isIntentExpanded ? (
+                  <ChevronUp size={14} className="md:w-4 md:h-4" />
+                ) : (
+                  <ChevronDown size={14} className="md:w-4 md:h-4" />
+                )}
+              </button>
+
+              {isIntentExpanded && (
+                <div className="mt-2 md:mt-3 space-y-2">
+                  <Textarea
+                    value={intentSummary}
+                    onChange={(e) => {
+                      isEditingIntentSummary.current = true;
+                      setIntentSummary(e.target.value);
+                    }}
+                    placeholder="示例：整体为科技感演讲，强调蓝色和霓虹，需突出关键指标。"
+                    rows={3}
+                    className="text-xs md:text-sm"
+                  />
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleSaveIntentSummary}
+                      disabled={isSavingIntentSummary}
+                      className="flex-1 text-xs md:text-sm"
+                    >
+                      {isSavingIntentSummary ? '保存中...' : '保存'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={<Sparkles size={14} />}
+                      onClick={handleRegenerateIntentSummary}
+                      disabled={isRegeneratingIntent}
+                      className="flex-1 text-xs md:text-sm"
+                    >
+                      {isRegeneratingIntent ? 'AI生成中...' : 'AI 重新生成'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 模板风格描述 */}
+            <div className="border-t border-gray-200 pt-2 md:pt-3">
+              <button
+                onClick={() => setIsTemplateStyleExpanded(!isTemplateStyleExpanded)}
+                className="w-full flex items-center justify-between text-xs md:text-sm font-medium text-gray-700 hover:text-gray-900 transition-colors"
+              >
+                <span>模板风格描述</span>
+                {isTemplateStyleExpanded ? (
+                  <ChevronUp size={14} className="md:w-4 md:h-4" />
+                ) : (
+                  <ChevronDown size={14} className="md:w-4 md:h-4" />
+                )}
+              </button>
+
+              {isTemplateStyleExpanded && (
+                <div className="mt-2 md:mt-3 space-y-2">
+                  <Textarea
+                    value={templateStyleDescription}
+                    onChange={(e) => {
+                      isEditingTemplateStyle.current = true;
+                      setTemplateStyleDescription(e.target.value);
+                    }}
+                    placeholder="示例：极简深色背景，荧光几何线条，三等分布局，字号偏大。"
+                    rows={3}
+                    className="text-xs md:text-sm"
+                  />
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleSaveTemplateStyle}
+                      disabled={isSavingTemplateStyle}
+                      className="flex-1 text-xs md:text-sm"
+                    >
+                      {isSavingTemplateStyle ? '保存中...' : '保存'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={<Sparkles size={14} />}
+                      onClick={handleRegenerateTemplateStyle}
+                      disabled={isRegeneratingTemplateStyle || !currentProject?.template_image_path}
+                      className="flex-1 text-xs md:text-sm"
+                    >
+                      {isRegeneratingTemplateStyle ? 'AI生成中...' : 'AI 重新生成'}
+                    </Button>
+                  </div>
+                  {!currentProject?.template_image_path && (
+                    <p className="text-[11px] text-gray-400">
+                      请先在下方上传模板图片后，再使用 AI 生成风格描述。
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -1375,4 +1599,3 @@ export const SlidePreview: React.FC = () => {
     </div>
   );
 };
-

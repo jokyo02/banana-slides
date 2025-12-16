@@ -17,7 +17,7 @@ _project_root = Path(__file__).parent.parent
 _env_file = _project_root / '.env'
 load_dotenv(dotenv_path=_env_file, override=True)
 
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_migrate import Migrate, upgrade
 from models import db
@@ -86,13 +86,26 @@ def create_app():
         handlers=[logging.StreamHandler(sys.stdout)],
         force=True,  # override any handlers created before this point
     )
+    # Ensure Flask's app logger shares the same handlers/level
+    root_logger = logging.getLogger()
+    app.logger.handlers = root_logger.handlers
+    app.logger.setLevel(root_logger.level)
+    app.logger.propagate = True
     
     # 设置第三方库的日志级别，避免过多的DEBUG日志
     logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
     logging.getLogger('httpcore').setLevel(logging.WARNING)
     logging.getLogger('httpx').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('werkzeug').setLevel(logging.INFO)  # Flask开发服务器日志保持INFO
+    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger.setLevel(logging.INFO)  # Flask开发服务器日志保持INFO
+    if not werkzeug_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+        ))
+        werkzeug_logger.addHandler(handler)
+    werkzeug_logger.propagate = True
     # OpenAI SDK 日志（防止打印完整请求/响应体，尤其是 base64 图片）
     logging.getLogger('openai').setLevel(logging.INFO)
     logging.getLogger('openai._base_client').setLevel(logging.INFO)
@@ -230,4 +243,4 @@ if __name__ == '__main__':
     
     # Enable reloader for hot reload in development
     # Using absolute paths for database, so WSL path issues should not occur
-    app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=True)
+    app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=debug)

@@ -83,6 +83,17 @@ export const updateProject = async (
   return response.data;
 };
 
+export const regenerateProjectIntent = async (
+  projectId: string,
+  options?: { regenerate_intent?: boolean; regenerate_template_style?: boolean }
+): Promise<ApiResponse<{ intent_summary?: string; template_style_description?: string }>> => {
+  const response = await apiClient.post<ApiResponse<{ intent_summary?: string; template_style_description?: string }>>(
+    `/api/projects/${projectId}/intent/regenerate`,
+    options || {}
+  );
+  return response.data;
+};
+
 /**
  * 更新页面顺序
  */

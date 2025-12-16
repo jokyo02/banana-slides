@@ -207,10 +207,18 @@ class OpenAIImageProvider(ImageProvider):
                         except Exception as decode_error:
                             logger.warning(f"Failed to decode base64 image from string: {decode_error}")
             
-            # Log raw response for debugging
+            # Log raw response for debugging（避免打印完整 base64 内容）
             logger.warning(f"Unable to extract image. Raw message type: {type(message)}")
-            logger.warning(f"Message content type: {type(getattr(message, 'content', None))}")
-            logger.warning(f"Message content: {getattr(message, 'content', 'N/A')}")
+            content_obj = getattr(message, "content", None)
+            logger.warning(f"Message content type: {type(content_obj)}")
+            # 只打印内容的摘要，防止 base64 图片数据刷屏
+            try:
+                summary = str(content_obj)
+                if len(summary) > 300:
+                    summary = summary[:300] + "...(truncated)"
+                logger.warning(f"Message content summary: {summary}")
+            except Exception:
+                logger.warning("Message content: <unprintable>")
             
             raise ValueError("No valid multimodal response received from OpenAI API")
             
